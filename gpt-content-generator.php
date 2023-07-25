@@ -2,7 +2,7 @@
 /*
 Plugin Name: Generatore di Contenuti GPT
 Description: Genera contenuto automatico utilizzando le API di OpenAI.
-Version: 0.8
+Version: 1.6
 Author: Gianluca Gentile
 Author URI: https://gtechgroup.it
 License: GPL-3.0
@@ -37,6 +37,12 @@ class GPTContentGenerator {
 		add_action( 'admin_menu', array( $this, 'aggiungi_pagina_plugin' ) );
 		add_action( 'wp_ajax_chat_with_gpt', array( $this, 'ajax_chat_con_gpt' ) ); // aggiungi questa linea
 		add_action( 'admin_init', array( $this, 'wp_tinymce_button' ) );
+		add_filter( 'http_request_timeout', array( $this, 'filter_request_timeout' ), 20, 1 );
+	}
+
+	public function filter_request_timeout( $timeout ) {
+		$timeout = 15;
+		return $timeout;
 	}
 
 	public function wp_tinymce_button() {
@@ -353,13 +359,14 @@ class GPTContentGenerator {
 			),
 			'method'      => 'POST',
 			'data_format' => 'body',
-			'timeout'     => 45,
+			'timeout'     => 120,
 			'redirection' => 5,
 			'httpversion' => '1.0',
 			'blocking'    => true,
 		);
 
-		/*$this->log(
+		/*
+		$this->log(
 			json_encode(
 				array(
 					'model'             => 'gpt-3.5-turbo',
