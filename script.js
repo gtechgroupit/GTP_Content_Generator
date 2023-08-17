@@ -22,7 +22,15 @@
                 title: 'Genera contenuto',
                 image: iconUrl,
                 onclick: async function () {
-                    console.log('Button clicked');
+                    // console.log('Button clicked');
+
+                    let content = tinymce.activeEditor.getContent();
+                    // console.log( content, 'content' );
+
+                    if (jQuery.trim(content) === null || jQuery.trim(content) === '') {
+                        alert('ERROR: Content is empty, please write some content then run GPT generator.');
+                        return false;
+                    }
 
                     jQuery('#wp-content-wrap').block({
                         message: '<h1>Sto generando il testo</h1>',
