@@ -1,13 +1,13 @@
 <?php
 /*
-Plugin Name: Generatore di Contenuti GPT
-Description: Genera contenuto automatico utilizzando le API di OpenAI.
-Version: 1.6
+Plugin Name: Generatore di Contenuti GPT Pro
+Description: Genera contenuto automatico utilizzando le API di OpenAI con sicurezza avanzata.
+Version: 2.0
 Author: Gianluca Gentile
 Author URI: https://gtechgroup.it
 License: GPL-3.0
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
-Text Domain: generatore-contenuti-gpt
+Text Domain: gpt-content-generator-pro
 Domain Path: /languages
 Requires at least: 6.2
 Requires PHP: 8.0
@@ -17,482 +17,736 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-class GPTContentGenerator {
-	// Definire i nomi delle opzioni e l'URL delle API come costanti
-	const OPTION_NAME_API_KEY           = 'openai_api_key';
-	const OPTION_NAME_TOKEN_COUNT       = 'openai_token_count';
-	const OPTION_NAME_PROMPT            = 'openai_prompt';
-	const OPTION_NAME_TEMPERATURE       = 'openai_temperature';
-	const OPTION_NAME_FREQUENCY_PENALTY = 'openai_frequency_penalty';
-	const OPTION_NAME_PRESENCE_PENALTY  = 'openai_presence_penalty';
-	const API_URL                       = 'https://api.openai.com/v1/chat/completions';
+// Define plugin constants
+define( 'GCG_VERSION', '2.0' );
+define( 'GCG_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
+define( 'GCG_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
+define( 'GCG_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
 
-	public function __construct() {
-		// Aggiungere le azioni e i filtri necessari
-		add_action( 'admin_menu', array( $this, 'aggiungi_pagina_plugin' ) );
-		add_action( 'admin_init', array( $this, 'inizializza_impostazioni' ) );
-		add_action( 'wp_ajax_generate_content', array( $this, 'ajax_genera_contenuto' ) );
-		// add_action( 'admin_enqueue_scripts', array( $this, 'carica_script_admin' ) );
-		add_action( 'admin_enqueue_scripts', array( $this, 'carica_script_admin_localize' ), 15 );
-		add_action( 'admin_menu', array( $this, 'aggiungi_pagina_plugin' ) );
-		add_action( 'wp_ajax_chat_with_gpt', array( $this, 'ajax_chat_con_gpt' ) ); // aggiungi questa linea
-		add_action( 'admin_init', array( $this, 'wp_tinymce_button' ) );
-		add_filter( 'http_request_timeout', array( $this, 'filter_request_timeout' ), 20, 1 );
+// Autoloader for classes
+spl_autoload_register( function ( $class ) {
+	$prefix = 'GCG\\';
+	$base_dir = GCG_PLUGIN_DIR . 'includes/';
+	
+	$len = strlen( $prefix );
+	if ( strncmp( $prefix, $class, $len ) !== 0 ) {
+		return;
 	}
-
-	public function filter_request_timeout( $timeout ) {
-		$timeout = 15;
-		return $timeout;
+	
+	$relative_class = substr( $class, $len );
+	$file = $base_dir . str_replace( '\\', '/', $relative_class ) . '.php';
+	
+	if ( file_exists( $file ) ) {
+		require $file;
 	}
+});
 
-	public function wp_tinymce_button() {
-		add_filter( 'mce_buttons', array( $this, 'registra_pulsante' ), 20, 1 );
-		add_filter( 'mce_external_plugins', array( $this, 'registra_plugin_tinymce' ), 20, 1 );
+// Main plugin class
+class GPTContentGeneratorPro {
+	
+	private static $instance = null;
+	
+	// Plugin options
+	const OPTION_PREFIX = 'gcg_';
+	const OPTION_API_KEY = 'gcg_openai_api_key';
+	const OPTION_MODEL = 'gcg_openai_model';
+	const OPTION_TOKEN_COUNT = 'gcg_token_count';
+	const OPTION_PROMPT_TEMPLATE = 'gcg_prompt_template';
+	const OPTION_TEMPERATURE = 'gcg_temperature';
+	const OPTION_FREQUENCY_PENALTY = 'gcg_frequency_penalty';
+	const OPTION_PRESENCE_PENALTY = 'gcg_presence_penalty';
+	const OPTION_RATE_LIMIT = 'gcg_rate_limit';
+	const OPTION_CACHE_DURATION = 'gcg_cache_duration';
+	const OPTION_ALLOWED_POST_TYPES = 'gcg_allowed_post_types';
+	const OPTION_ALLOWED_ROLES = 'gcg_allowed_roles';
+	
+	// API constants
+	const API_URL = 'https://api.openai.com/v1/chat/completions';
+	const TRANSIENT_PREFIX = 'gcg_cache_';
+	const RATE_LIMIT_PREFIX = 'gcg_rate_';
+	
+	// Available models
+	const AVAILABLE_MODELS = [
+		'gpt-4' => 'GPT-4',
+		'gpt-4-32k' => 'GPT-4 32K',
+		'gpt-3.5-turbo' => 'GPT-3.5 Turbo',
+		'gpt-3.5-turbo-16k' => 'GPT-3.5 Turbo 16K'
+	];
+	
+	public static function get_instance() {
+		if ( null === self::$instance ) {
+			self::$instance = new self();
+		}
+		return self::$instance;
 	}
-
-	// Aggiungere la pagina del menu del plugin
-	public function aggiungi_pagina_plugin() {
+	
+	private function __construct() {
+		$this->init_hooks();
+	}
+	
+	private function init_hooks() {
+		// Activation/Deactivation hooks
+		register_activation_hook( __FILE__, [ $this, 'activate' ] );
+		register_deactivation_hook( __FILE__, [ $this, 'deactivate' ] );
+		register_uninstall_hook( __FILE__, [ __CLASS__, 'uninstall' ] );
+		
+		// Admin hooks
+		add_action( 'admin_menu', [ $this, 'add_admin_menu' ] );
+		add_action( 'admin_init', [ $this, 'init_settings' ] );
+		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_scripts' ] );
+		
+		// AJAX hooks
+		add_action( 'wp_ajax_gcg_generate_content', [ $this, 'ajax_generate_content' ] );
+		add_action( 'wp_ajax_gcg_get_prompt_preview', [ $this, 'ajax_get_prompt_preview' ] );
+		add_action( 'wp_ajax_gcg_clear_cache', [ $this, 'ajax_clear_cache' ] );
+		add_action( 'wp_ajax_gcg_test_api', [ $this, 'ajax_test_api' ] );
+		
+		// TinyMCE hooks
+		add_action( 'admin_init', [ $this, 'init_tinymce' ] );
+		
+		// Filter hooks
+		add_filter( 'plugin_action_links_' . GCG_PLUGIN_BASENAME, [ $this, 'add_action_links' ] );
+		add_filter( 'http_request_timeout', [ $this, 'filter_request_timeout' ], 10, 2 );
+		
+		// Load textdomain
+		add_action( 'plugins_loaded', [ $this, 'load_textdomain' ] );
+		
+		// Add meta box for custom prompts
+		add_action( 'add_meta_boxes', [ $this, 'add_meta_boxes' ] );
+		add_action( 'save_post', [ $this, 'save_post_meta' ] );
+	}
+	
+	public function activate() {
+		// Create database tables if needed
+		$this->create_tables();
+		
+		// Set default options
+		$this->set_default_options();
+		
+		// Schedule cron jobs
+		if ( ! wp_next_scheduled( 'gcg_cleanup_logs' ) ) {
+			wp_schedule_event( time(), 'daily', 'gcg_cleanup_logs' );
+		}
+		
+		// Flush rewrite rules
+		flush_rewrite_rules();
+	}
+	
+	public function deactivate() {
+		// Clear scheduled events
+		wp_clear_scheduled_hook( 'gcg_cleanup_logs' );
+		
+		// Clear cache
+		$this->clear_all_cache();
+	}
+	
+	public static function uninstall() {
+		// Remove all options
+		global $wpdb;
+		$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'gcg_%'" );
+		
+		// Drop custom tables
+		$table_name = $wpdb->prefix . 'gcg_logs';
+		$wpdb->query( "DROP TABLE IF EXISTS {$table_name}" );
+		
+		// Clear all transients
+		$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_gcg_%'" );
+		$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_timeout_gcg_%'" );
+	}
+	
+	private function create_tables() {
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'gcg_logs';
+		$charset_collate = $wpdb->get_charset_collate();
+		
+		$sql = "CREATE TABLE IF NOT EXISTS {$table_name} (
+			id bigint(20) NOT NULL AUTO_INCREMENT,
+			user_id bigint(20) NOT NULL,
+			post_id bigint(20) DEFAULT NULL,
+			prompt text NOT NULL,
+			response text,
+			tokens_used int(11) DEFAULT 0,
+			model varchar(50) DEFAULT NULL,
+			status varchar(20) DEFAULT 'success',
+			error_message text,
+			created_at datetime DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (id),
+			KEY user_id (user_id),
+			KEY post_id (post_id),
+			KEY created_at (created_at)
+		) $charset_collate;";
+		
+		require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
+		dbDelta( $sql );
+	}
+	
+	private function set_default_options() {
+		$defaults = [
+			self::OPTION_MODEL => 'gpt-3.5-turbo',
+			self::OPTION_TOKEN_COUNT => 500,
+			self::OPTION_PROMPT_TEMPLATE => 'Scrivi un articolo SEO-friendly e informativo basato sul seguente contenuto: {content}',
+			self::OPTION_TEMPERATURE => 0.7,
+			self::OPTION_FREQUENCY_PENALTY => 0.0,
+			self::OPTION_PRESENCE_PENALTY => 0.0,
+			self::OPTION_RATE_LIMIT => 10, // requests per hour
+			self::OPTION_CACHE_DURATION => 3600, // 1 hour
+			self::OPTION_ALLOWED_POST_TYPES => ['post', 'page'],
+			self::OPTION_ALLOWED_ROLES => ['administrator', 'editor']
+		];
+		
+		foreach ( $defaults as $option => $value ) {
+			if ( get_option( $option ) === false ) {
+				update_option( $option, $value );
+			}
+		}
+	}
+	
+	public function load_textdomain() {
+		load_plugin_textdomain( 'gpt-content-generator-pro', false, dirname( GCG_PLUGIN_BASENAME ) . '/languages' );
+	}
+	
+	public function add_admin_menu() {
 		add_menu_page(
-			'Impostazioni Generatore di Contenuti GPT',
-			'Generatore di Contenuti GPT',
+			__( 'GPT Content Generator', 'gpt-content-generator-pro' ),
+			__( 'GPT Generator', 'gpt-content-generator-pro' ),
 			'manage_options',
 			'gpt-content-generator',
-			array( $this, 'crea_pagina_admin' )
+			[ $this, 'render_admin_page' ],
+			'dashicons-edit-large',
+			30
 		);
-
+		
 		add_submenu_page(
 			'gpt-content-generator',
-			'Log degli errori',
-			'Error Log',
+			__( 'Settings', 'gpt-content-generator-pro' ),
+			__( 'Settings', 'gpt-content-generator-pro' ),
 			'manage_options',
-			'gpt-content-generator-error-log',
-			array( $this, 'crea_pagina_log_errori' )
+			'gpt-content-generator',
+			[ $this, 'render_admin_page' ]
 		);
-
-		// Aggiungi una nuova pagina di sottomenu per la chat
+		
 		add_submenu_page(
 			'gpt-content-generator',
-			'Chat con GPT',
-			'Chat con GPT',
+			__( 'Usage Logs', 'gpt-content-generator-pro' ),
+			__( 'Usage Logs', 'gpt-content-generator-pro' ),
 			'manage_options',
-			'gpt-content-generator-chat',
-			array( $this, 'crea_pagina_chat' )
+			'gcg-logs',
+			[ $this, 'render_logs_page' ]
 		);
-	}
-
-	// Creare la pagina di chat
-	public function crea_pagina_chat() {
-		?>
-		<div class="wrap">
-			<h2>Chat con GPT</h2>
-			<!-- Qui dovresti inserire il tuo codice HTML per il campo di input della chat e l'area di visualizzazione -->
-			<div id="gpt-chat-input"></div>
-			<div id="gpt-chat-display"></div>
-		</div>
-		<?php
-	}
-
-	// Metodo AJAX per la chat con GPT
-	public function ajax_chat_con_gpt() {
-		check_ajax_referer( 'gpt_content_generator_nonce', 'security' );
-
-		if ( ! isset( $_POST['message'] ) ) {
-			wp_send_json_error( 'Manca il messaggio.' );
-		}
-
-		$message  = sanitize_text_field( $_POST['message'] );
-		$response = $this->esegui_richiesta_api( $message, 100 ); // ad esempio, ho impostato un limite di 100 token
-
-		if ( is_wp_error( $response ) ) {
-			$this->registra_errore( $response->get_error_message() );
-			wp_send_json_error( $response->get_error_message() );
-		}
-
-		// $this->log( wp_remote_retrieve_body( $response ) );
-
-		$body = json_decode( wp_remote_retrieve_body( $response ), true );
-
-		if ( ! isset( $body['choices'][0]['message']['content'] ) ) {
-			$this->registra_errore( 'Le API di OpenAI non hanno restituito alcun contenuto.' );
-			wp_send_json_error( 'Le API di OpenAI non hanno restituito alcun contenuto.' );
-		}
-
-		wp_send_json_success( trim( $body['choices'][0]['message']['content'] ) );
-	}
-
-	// Creare la pagina di amministrazione del plugin
-	public function crea_pagina_admin() {
-		?>
-		<div class="wrap">
-			<h2>Generatore di Contenuti GPT</h2>
-			<form method="post" action="options.php">
-			<?php
-				settings_fields( 'gpt_content_generator_option_group' );
-				do_settings_sections( 'gpt-content-generator' );
-				submit_button();
-			?>
-			</form>
-		</div>
-		<?php
-	}
-
-	// Creare la pagina di log degli errori
-	public function crea_pagina_log_errori() {
-		$error_log = get_option( 'gpt_content_generator_error_log', array() );
-		?>
-		<div class="wrap">
-			<h2>Log degli errori di Generatore di Contenuti GPT</h2>
-			<?php if ( empty( $error_log ) ) : ?>
-				<p>Nessun errore registrato.</p>
-			<?php else : ?>
-				<ul>
-					<?php foreach ( $error_log as $error ) : ?>
-						<li style="color: red;"><?php echo esc_html( $error ); ?></li>
-					<?php endforeach; ?>
-				</ul>
-			<?php endif; ?>
-		</div>
-		<?php
-	}
-
-	// Inizializzare le impostazioni
-	public function inizializza_impostazioni() {
-		register_setting( 'gpt_content_generator_option_group', self::OPTION_NAME_API_KEY, 'sanitize_text_field' );
-		register_setting( 'gpt_content_generator_option_group', self::OPTION_NAME_TOKEN_COUNT, 'intval' );
-		register_setting( 'gpt_content_generator_option_group', self::OPTION_NAME_PROMPT, 'sanitize_text_field' );
-		register_setting( 'gpt_content_generator_option_group', self::OPTION_NAME_TEMPERATURE, 'floatval' );
-		register_setting( 'gpt_content_generator_option_group', self::OPTION_NAME_FREQUENCY_PENALTY, 'floatval' );
-		register_setting( 'gpt_content_generator_option_group', self::OPTION_NAME_PRESENCE_PENALTY, 'floatval' );
-		register_setting( 'gpt_content_generator_option_group', 'gpt_content_generator_error_log' );
-
-		add_settings_section(
-			'setting_section_id',
-			'Impostazioni',
-			array( $this, 'stampa_informazioni_sezione' ),
-			'gpt-content-generator'
-		);
-
-		add_settings_field(
-			self::OPTION_NAME_API_KEY,
-			'Chiave API di OpenAI',
-			array( $this, 'callback_campo_impostazioni' ),
+		
+		add_submenu_page(
 			'gpt-content-generator',
-			'setting_section_id',
-			array(
-				'label_for'   => self::OPTION_NAME_API_KEY,
-				'description' => 'Inserisci la chiave API fornita da OpenAI.',
-			)
-		);
-
-		add_settings_field(
-			self::OPTION_NAME_TOKEN_COUNT,
-			'Numero di Token',
-			array( $this, 'callback_campo_impostazioni' ),
-			'gpt-content-generator',
-			'setting_section_id',
-			array(
-				'label_for'   => self::OPTION_NAME_TOKEN_COUNT,
-				'description' => 'Inserisci il numero massimo di token da generare per ogni richiesta.',
-			)
-		);
-
-		add_settings_field(
-			self::OPTION_NAME_PROMPT,
-			'Prompt',
-			array( $this, 'callback_campo_impostazioni' ),
-			'gpt-content-generator',
-			'setting_section_id',
-			array(
-				'label_for'   => self::OPTION_NAME_PROMPT,
-				'description' => 'Inserisci il prompt da utilizzare per iniziare la generazione del testo.',
-			)
-		);
-
-		add_settings_field(
-			self::OPTION_NAME_TEMPERATURE,
-			'Temperatura di OpenAI',
-			array( $this, 'callback_campo_impostazioni' ),
-			'gpt-content-generator',
-			'setting_section_id',
-			array(
-				'label_for'   => self::OPTION_NAME_TEMPERATURE,
-				'description' => 'Inserisci la "temperatura" desiderata per la generazione del contenuto da parte di OpenAI. Un valore più alto porta a risultati più casuali.',
-			)
-		);
-
-		add_settings_field(
-			self::OPTION_NAME_FREQUENCY_PENALTY,
-			'Penalità di Frequenza OpenAI',
-			array( $this, 'callback_campo_impostazioni' ),
-			'gpt-content-generator',
-			'setting_section_id',
-			array(
-				'label_for'   => self::OPTION_NAME_FREQUENCY_PENALTY,
-				'description' => 'Inserisci la penalità di frequenza desiderata. Un valore più alto riduce la probabilità di parole ripetute.',
-			)
-		);
-
-		add_settings_field(
-			self::OPTION_NAME_PRESENCE_PENALTY,
-			'Penalità di Presenza OpenAI',
-			array( $this, 'callback_campo_impostazioni' ),
-			'gpt-content-generator',
-			'setting_section_id',
-			array(
-				'label_for'   => self::OPTION_NAME_PRESENCE_PENALTY,
-				'description' => 'Inserisci la penalità di presenza desiderata. Un valore più alto rende meno probabile la comparsa di nuovi concetti.',
-			)
+			__( 'Prompt Templates', 'gpt-content-generator-pro' ),
+			__( 'Templates', 'gpt-content-generator-pro' ),
+			'manage_options',
+			'gcg-templates',
+			[ $this, 'render_templates_page' ]
 		);
 	}
-
-	// Stampa le informazioni della sezione
-	public function stampa_informazioni_sezione() {
-		print 'Inserisci le tue impostazioni qui sotto:';
+	
+	public function init_settings() {
+		register_setting( 'gcg_settings', self::OPTION_API_KEY, [
+			'sanitize_callback' => [ $this, 'sanitize_api_key' ]
+		]);
+		
+		register_setting( 'gcg_settings', self::OPTION_MODEL );
+		register_setting( 'gcg_settings', self::OPTION_TOKEN_COUNT, [
+			'sanitize_callback' => 'absint'
+		]);
+		register_setting( 'gcg_settings', self::OPTION_PROMPT_TEMPLATE, [
+			'sanitize_callback' => 'sanitize_textarea_field'
+		]);
+		register_setting( 'gcg_settings', self::OPTION_TEMPERATURE, [
+			'sanitize_callback' => [ $this, 'sanitize_float' ]
+		]);
+		register_setting( 'gcg_settings', self::OPTION_FREQUENCY_PENALTY, [
+			'sanitize_callback' => [ $this, 'sanitize_float' ]
+		]);
+		register_setting( 'gcg_settings', self::OPTION_PRESENCE_PENALTY, [
+			'sanitize_callback' => [ $this, 'sanitize_float' ]
+		]);
+		register_setting( 'gcg_settings', self::OPTION_RATE_LIMIT, [
+			'sanitize_callback' => 'absint'
+		]);
+		register_setting( 'gcg_settings', self::OPTION_CACHE_DURATION, [
+			'sanitize_callback' => 'absint'
+		]);
+		register_setting( 'gcg_settings', self::OPTION_ALLOWED_POST_TYPES, [
+			'sanitize_callback' => [ $this, 'sanitize_array' ]
+		]);
+		register_setting( 'gcg_settings', self::OPTION_ALLOWED_ROLES, [
+			'sanitize_callback' => [ $this, 'sanitize_array' ]
+		]);
 	}
-
-	// Callback per i campi delle impostazioni
-	public function callback_campo_impostazioni( $args ) {
-		$option_name  = $args['label_for'];
-		$option_value = get_option( $option_name );
-		echo '<input id="' . $option_name . '" name="' . $option_name . '" type="text" value="' . $option_value . '">';
-
-		if ( isset( $args['description'] ) ) {
-			echo '<p class="description">' . $args['description'] . '</p>';
+	
+	public function sanitize_api_key( $key ) {
+		$key = sanitize_text_field( $key );
+		// Encrypt API key before storing
+		if ( ! empty( $key ) && strpos( $key, 'sk-' ) === 0 ) {
+			return $this->encrypt_data( $key );
 		}
+		return $key;
 	}
-
-	// Metodo AJAX per generare contenuto
-	public function ajax_genera_contenuto() {
-		check_admin_referer( 'gpt_content_generator_nonce', 'security' );
-
-		if ( ! isset( $_POST['post_id'] ) ) {
-			wp_die( 'Manca l\'ID del post.' );
+	
+	public function sanitize_float( $value ) {
+		return floatval( $value );
+	}
+	
+	public function sanitize_array( $value ) {
+		if ( ! is_array( $value ) ) {
+			return [];
 		}
-
-		$post_id      = intval( $_POST['post_id'] );
-		$post_content = get_post_field( 'post_content', $post_id );
-		$prompt       = 'Scrivi un articolo informativo basato sul contenuto seguente: ' . $post_content;
-
-		// sleep(10);
-		// wp_send_json_success( array( 'content' => $post_content ) );
-
-		$token_count = get_option( self::OPTION_NAME_TOKEN_COUNT );
-
-		$response = $this->esegui_richiesta_api( $prompt, intval( $token_count ) );
-
-		$this->log(
-			array(
-				'prompt' => $prompt,
-				wp_remote_retrieve_body( $response ),
-			)
+		return array_map( 'sanitize_text_field', $value );
+	}
+	
+	private function encrypt_data( $data ) {
+		$key = wp_salt( 'auth' );
+		$cipher = 'AES-256-CBC';
+		$ivlen = openssl_cipher_iv_length( $cipher );
+		$iv = openssl_random_pseudo_bytes( $ivlen );
+		$ciphertext = openssl_encrypt( $data, $cipher, $key, 0, $iv );
+		return base64_encode( $iv . $ciphertext );
+	}
+	
+	private function decrypt_data( $data ) {
+		$key = wp_salt( 'auth' );
+		$cipher = 'AES-256-CBC';
+		$data = base64_decode( $data );
+		$ivlen = openssl_cipher_iv_length( $cipher );
+		$iv = substr( $data, 0, $ivlen );
+		$ciphertext = substr( $data, $ivlen );
+		return openssl_decrypt( $ciphertext, $cipher, $key, 0, $iv );
+	}
+	
+	public function enqueue_admin_scripts( $hook ) {
+		// Global admin styles
+		wp_enqueue_style( 
+			'gcg-admin', 
+			GCG_PLUGIN_URL . 'assets/css/admin.css', 
+			[], 
+			GCG_VERSION 
 		);
-
-		if ( is_wp_error( $response ) ) {
-			$this->registra_errore( $response->get_error_message() );
-			wp_send_json_error( array( 'error' => $response->get_error_message() ) );
-			// wp_die( $response->get_error_message() );
+		
+		// Plugin pages scripts
+		if ( strpos( $hook, 'gpt-content-generator' ) !== false || strpos( $hook, 'gcg-' ) !== false ) {
+			wp_enqueue_script( 
+				'gcg-admin', 
+				GCG_PLUGIN_URL . 'assets/js/admin.js', 
+				['jquery', 'wp-i18n'], 
+				GCG_VERSION, 
+				true 
+			);
+			
+			wp_localize_script( 'gcg-admin', 'gcg', [
+				'ajaxurl' => admin_url( 'admin-ajax.php' ),
+				'nonce' => wp_create_nonce( 'gcg_ajax' ),
+				'strings' => [
+					'confirm_clear_cache' => __( 'Are you sure you want to clear the cache?', 'gpt-content-generator-pro' ),
+					'api_test_success' => __( 'API connection successful!', 'gpt-content-generator-pro' ),
+					'api_test_error' => __( 'API connection failed: ', 'gpt-content-generator-pro' ),
+				]
+			]);
 		}
-
-		$body = json_decode( wp_remote_retrieve_body( $response ), true );
-
-		$this->log( $body );
-		$this->log( $body['choices'][0]['message']['content'] );
-
-		if ( ! isset( $body['choices'][0]['message']['content'] ) ) {
-			$this->registra_errore( 'Le API di OpenAI non hanno restituito alcun contenuto.' );
-			wp_send_json_error( array( 'error' => 'Le API di OpenAI non hanno restituito alcun contenuto.' ) );
-			// wp_die( 'Le API di OpenAI non hanno restituito alcun contenuto.' );
+		
+		// Post editor scripts
+		if ( in_array( $hook, ['post.php', 'post-new.php'] ) ) {
+			$post_type = get_post_type();
+			$allowed_post_types = get_option( self::OPTION_ALLOWED_POST_TYPES, ['post', 'page'] );
+			
+			if ( in_array( $post_type, $allowed_post_types ) && $this->user_can_generate() ) {
+				wp_enqueue_script( 
+					'jquery-blockui', 
+					GCG_PLUGIN_URL . 'assets/js/jquery.blockUI.min.js', 
+					['jquery'], 
+					'2.70', 
+					true 
+				);
+			}
 		}
-
-		// Aggiorna il contenuto del post e reindirizza all'editor del post
-		wp_update_post(
-			array(
-				'ID'           => $post_id,
-				'post_content' => $post_content . "\n\n" . trim( $body['choices'][0]['message']['content'] ),
-			)
-		);
-
-		wp_send_json_success( array( 'content' => "\n\n" . trim( $body['choices'][0]['message']['content'] ) ) );
-		// wp_redirect( admin_url( 'post.php?post=' . $post_id . '&action=edit' ) );
-		// exit;
 	}
-
-	// Eseguire una richiesta alle API
-	public function esegui_richiesta_api( $prompt, $token_count ) {
-		$api_key           = get_option( self::OPTION_NAME_API_KEY );
-		$temperature       = (float) get_option( self::OPTION_NAME_TEMPERATURE );
-		$frequency_penalty = (float) get_option( self::OPTION_NAME_FREQUENCY_PENALTY );
-		$presence_penalty  = (float) get_option( self::OPTION_NAME_PRESENCE_PENALTY );
-
-		if ( ! $api_key ) {
-			return new WP_Error( 'openai_api_key_missing', 'Manca la chiave API di OpenAI nelle impostazioni del plugin.' );
+	
+	public function init_tinymce() {
+		if ( ! $this->user_can_generate() ) {
+			return;
 		}
-
-		$args = array(
-			'headers'     => array(
-				'Content-Type'  => 'application/json',
-				'Authorization' => 'Bearer ' . $api_key,
-			),
-			'body'        => json_encode(
-				array(
-					'model'             => 'gpt-4',
-					'messages'          => array(
-						array(
-							'role'    => 'assistant',
-							'content' => $prompt,
-						),
-					),
-					'max_tokens'        => $token_count,
-					'temperature'       => $temperature,
-					'frequency_penalty' => $frequency_penalty,
-					'presence_penalty'  => $presence_penalty,
-				)
-				/*
-				array(
-				'model'             => 'text-davinci-003',
-				'prompt'            => $prompt,
-				'max_tokens'        => $token_count,
-				'temperature'       => $temperature,
-				'frequency_penalty' => $frequency_penalty,
-				'presence_penalty'  => $presence_penalty,
-				)*/
-			),
-			'method'      => 'POST',
-			'data_format' => 'body',
-			'timeout'     => 120,
-			'redirection' => 5,
-			'httpversion' => '1.0',
-			'blocking'    => true,
-		);
-
-		/*
-		$this->log(
-			json_encode(
-				array(
-					'model'             => 'gpt-3.5-turbo',
-					'messages'          => array(
-						array(
-							'role'    => 'assistant',
-							'content' => $prompt,
-						),
-					),
-					'max_tokens'        => $token_count,
-					'temperature'       => $temperature,
-					'frequency_penalty' => $frequency_penalty,
-					'presence_penalty'  => $presence_penalty,
-				)
-			)
-		);*/
-
-		return wp_remote_post( self::API_URL, $args );
+		
+		add_filter( 'mce_buttons', [ $this, 'register_tinymce_button' ] );
+		add_filter( 'mce_external_plugins', [ $this, 'register_tinymce_plugin' ] );
+		add_action( 'admin_head', [ $this, 'tinymce_variables' ] );
 	}
-
-	// Registrare un errore
-	public function registra_errore( $message ) {
-		$error_log = get_option( 'gpt_content_generator_error_log', array() );
-
-		if ( ! is_array( $error_log ) ) {
-			$error_log = array();
-		}
-
-		array_push( $error_log, $message );
-		update_option( 'gpt_content_generator_error_log', $error_log );
-	}
-
-	// Registrare il pulsante
-	public function registra_pulsante( $buttons ) {
-		array_push( $buttons, 'separator', 'gpt_content_generator' );
+	
+	public function register_tinymce_button( $buttons ) {
+		array_push( $buttons, 'separator', 'gcg_generate' );
 		return $buttons;
 	}
-
-	// Registrare il plugin TinyMCE
-	public function registra_plugin_tinymce( $plugin_array ) {
-		$plugin_array['gpt_content_generator'] = plugins_url( 'script.js', __FILE__ );
-		return $plugin_array;
+	
+	public function register_tinymce_plugin( $plugins ) {
+		$plugins['gcg_generate'] = GCG_PLUGIN_URL . 'assets/js/tinymce-plugin.js';
+		return $plugins;
 	}
-
-	// Caricare gli script dell'admin
-	public function carica_script_admin( $hook ) {
-		if ( 'post.php' !== $hook && 'post-new.php' !== $hook ) {
-			return;
-		}
-
-		$post_id = get_the_ID();
-		$post    = get_post( $post_id );
-		$content = apply_filters( 'the_content', $post->post_content );
-
-		$script_data = array(
-			'iconUrl'       => plugins_url( 'icona/gpt-icon.png', __FILE__ ),
-			'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
-			'nonce'         => wp_create_nonce( 'gpt_content_generator_nonce' ),
-			'postId'        => $post_id,
-			'postContent'   => $content, // aggiungi il contenuto del post
-			'defaultPrompt' => get_option( self::OPTION_NAME_PROMPT ), // aggiungi il prompt di default
-		);
-
-		wp_register_script( 'gpt-content-generator', plugins_url( 'script.js', __FILE__ ) );
-		wp_localize_script( 'gpt-content-generator', 'gptContentGenerator', $script_data );
-		wp_enqueue_script( 'gpt-content-generator' );
-	}
-
-	public function carica_script_admin_localize( $hook ) {
-		if ( ! wp_scripts()->query( 'jquery-blockui', 'registered' ) ) {
-			wp_register_script( 'jquery-blockui', plugins_url( 'jquery-blockui/jquery.blockUI.min.js', __FILE__ ), array( 'jquery' ), '2.70', true );
-		}
-
-		wp_enqueue_script( 'jquery-blockui' );
-
-		if ( 'post.php' !== $hook && 'post-new.php' !== $hook ) {
-			return;
-		}
-
-		$post_id = get_the_ID();
-		$post    = get_post( $post_id );
-		$content = apply_filters( 'the_content', $post->post_content );
-
-		$script_data = array(
-			'iconUrl'       => plugins_url( 'icona/gpt-icon.png', __FILE__ ),
-			'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
-			'nonce'         => wp_create_nonce( 'gpt_content_generator_nonce' ),
-			'postId'        => $post_id,
-			'postContent'   => $content, // aggiungi il contenuto del post
-			'defaultPrompt' => get_option( self::OPTION_NAME_PROMPT ), // aggiungi il prompt di default
-		);
-
+	
+	public function tinymce_variables() {
 		?>
-		<!-- TinyMCE Shortcode Plugin -->
-		<script type='text/javascript'>
-		var gptContentGenerator = <?php echo wp_json_encode( $script_data ); ?>;
+		<script type="text/javascript">
+		var gcg_tinymce = {
+			ajaxurl: '<?php echo admin_url( 'admin-ajax.php' ); ?>',
+			nonce: '<?php echo wp_create_nonce( 'gcg_ajax' ); ?>',
+			post_id: <?php echo get_the_ID(); ?>,
+			icon_url: '<?php echo GCG_PLUGIN_URL . 'assets/images/icon.png'; ?>',
+			strings: {
+				button_title: '<?php _e( 'Generate Content with AI', 'gpt-content-generator-pro' ); ?>',
+				generating: '<?php _e( 'Generating content...', 'gpt-content-generator-pro' ); ?>',
+				error_empty: '<?php _e( 'Please write some content first.', 'gpt-content-generator-pro' ); ?>',
+				error_generic: '<?php _e( 'An error occurred while generating content.', 'gpt-content-generator-pro' ); ?>'
+			}
+		};
 		</script>
-		<!-- TinyMCE Shortcode Plugin -->
 		<?php
 	}
-
-	public function get_log_dir( string $handle ) {
-		$upload_dir = wp_upload_dir();
-		$log_dir    = $upload_dir['basedir'] . '/' . $handle . '-logs';
-		wp_mkdir_p( $log_dir );
-		return $log_dir;
-	}
-
-	public function get_log_file_name( string $handle ) {
-		if ( function_exists( 'wp_hash' ) ) {
-			$date_suffix = date( 'Y-m-d', time() );
-			$hash_suffix = wp_hash( $handle );
-			return $this->get_log_dir( $handle ) . '/' . sanitize_file_name( implode( '-', array( $handle, $date_suffix, $hash_suffix ) ) . '.log' );
+	
+	public function add_meta_boxes() {
+		$allowed_post_types = get_option( self::OPTION_ALLOWED_POST_TYPES, ['post', 'page'] );
+		
+		foreach ( $allowed_post_types as $post_type ) {
+			add_meta_box(
+				'gcg_custom_prompt',
+				__( 'GPT Content Generator', 'gpt-content-generator-pro' ),
+				[ $this, 'render_meta_box' ],
+				$post_type,
+				'side',
+				'default'
+			);
 		}
-
-		return $this->get_log_dir( $handle ) . '/' . $handle . '-' . date( 'Y-m-d', time() ) . '.log';
 	}
-
-	public function log( $message ) {
-		if ( function_exists( 'wc_get_logger' ) ) {
-			wc_get_logger()->debug( print_r( $message, true ), array( 'source' => 'GPTContentGenerator' ) );
+	
+	public function render_meta_box( $post ) {
+		wp_nonce_field( 'gcg_save_meta', 'gcg_meta_nonce' );
+		
+		$custom_prompt = get_post_meta( $post->ID, '_gcg_custom_prompt', true );
+		$use_custom = get_post_meta( $post->ID, '_gcg_use_custom_prompt', true );
+		?>
+		<p>
+			<label>
+				<input type="checkbox" name="gcg_use_custom_prompt" value="1" <?php checked( $use_custom, '1' ); ?>>
+				<?php _e( 'Use custom prompt for this post', 'gpt-content-generator-pro' ); ?>
+			</label>
+		</p>
+		<p>
+			<label for="gcg_custom_prompt"><?php _e( 'Custom Prompt:', 'gpt-content-generator-pro' ); ?></label>
+			<textarea id="gcg_custom_prompt" name="gcg_custom_prompt" rows="4" style="width:100%;"><?php echo esc_textarea( $custom_prompt ); ?></textarea>
+		</p>
+		<p class="description">
+			<?php _e( 'Use {content} as placeholder for post content.', 'gpt-content-generator-pro' ); ?>
+		</p>
+		<?php
+	}
+	
+	public function save_post_meta( $post_id ) {
+		if ( ! isset( $_POST['gcg_meta_nonce'] ) || ! wp_verify_nonce( $_POST['gcg_meta_nonce'], 'gcg_save_meta' ) ) {
+			return;
+		}
+		
+		if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+			return;
+		}
+		
+		if ( ! current_user_can( 'edit_post', $post_id ) ) {
+			return;
+		}
+		
+		$use_custom = isset( $_POST['gcg_use_custom_prompt'] ) ? '1' : '0';
+		update_post_meta( $post_id, '_gcg_use_custom_prompt', $use_custom );
+		
+		if ( isset( $_POST['gcg_custom_prompt'] ) ) {
+			update_post_meta( $post_id, '_gcg_custom_prompt', sanitize_textarea_field( $_POST['gcg_custom_prompt'] ) );
+		}
+	}
+	
+	public function ajax_generate_content() {
+		check_ajax_referer( 'gcg_ajax', 'nonce' );
+		
+		if ( ! $this->user_can_generate() ) {
+			wp_send_json_error( __( 'You do not have permission to generate content.', 'gpt-content-generator-pro' ) );
+		}
+		
+		$post_id = isset( $_POST['post_id'] ) ? intval( $_POST['post_id'] ) : 0;
+		
+		if ( ! $post_id || ! current_user_can( 'edit_post', $post_id ) ) {
+			wp_send_json_error( __( 'Invalid post ID or insufficient permissions.', 'gpt-content-generator-pro' ) );
+		}
+		
+		// Check rate limit
+		if ( ! $this->check_rate_limit() ) {
+			wp_send_json_error( __( 'Rate limit exceeded. Please try again later.', 'gpt-content-generator-pro' ) );
+		}
+		
+		$post = get_post( $post_id );
+		$content = $post->post_content;
+		
+		if ( empty( trim( $content ) ) ) {
+			wp_send_json_error( __( 'Post content is empty.', 'gpt-content-generator-pro' ) );
+		}
+		
+		// Get prompt
+		$prompt = $this->get_prompt_for_post( $post_id, $content );
+		
+		// Check cache first
+		$cache_key = $this->get_cache_key( $prompt );
+		$cached_response = get_transient( $cache_key );
+		
+		if ( $cached_response !== false ) {
+			$this->log_usage( $post_id, $prompt, $cached_response, 0, 'cache' );
+			wp_send_json_success( [
+				'content' => $cached_response,
+				'from_cache' => true
+			] );
+		}
+		
+		// Make API request
+		$response = $this->make_api_request( $prompt );
+		
+		if ( is_wp_error( $response ) ) {
+			$this->log_usage( $post_id, $prompt, '', 0, 'error', $response->get_error_message() );
+			wp_send_json_error( $response->get_error_message() );
+		}
+		
+		// Cache the response
+		$cache_duration = get_option( self::OPTION_CACHE_DURATION, 3600 );
+		if ( $cache_duration > 0 ) {
+			set_transient( $cache_key, $response['content'], $cache_duration );
+		}
+		
+		// Update rate limit
+		$this->update_rate_limit();
+		
+		// Log usage
+		$this->log_usage( $post_id, $prompt, $response['content'], $response['tokens'], 'success' );
+		
+		wp_send_json_success( [
+			'content' => $response['content'],
+			'tokens_used' => $response['tokens'],
+			'from_cache' => false
+		] );
+	}
+	
+	private function user_can_generate() {
+		$allowed_roles = get_option( self::OPTION_ALLOWED_ROLES, ['administrator', 'editor'] );
+		$user = wp_get_current_user();
+		
+		if ( empty( $user->roles ) ) {
+			return false;
+		}
+		
+		return ! empty( array_intersect( $allowed_roles, $user->roles ) );
+	}
+	
+	private function check_rate_limit() {
+		$user_id = get_current_user_id();
+		$rate_limit = get_option( self::OPTION_RATE_LIMIT, 10 );
+		
+		if ( $rate_limit <= 0 ) {
+			return true; // No rate limit
+		}
+		
+		$transient_key = self::RATE_LIMIT_PREFIX . $user_id;
+		$requests = get_transient( $transient_key );
+		
+		if ( $requests === false ) {
+			return true;
+		}
+		
+		return $requests < $rate_limit;
+	}
+	
+	private function update_rate_limit() {
+		$user_id = get_current_user_id();
+		$transient_key = self::RATE_LIMIT_PREFIX . $user_id;
+		$requests = get_transient( $transient_key );
+		
+		if ( $requests === false ) {
+			set_transient( $transient_key, 1, HOUR_IN_SECONDS );
 		} else {
-			error_log( date( '[Y-m-d H:i:s e] ' ) . print_r( $message, true ) . PHP_EOL, 3, $this->get_log_file_name( 'GPTContentGenerator' ) );
+			set_transient( $transient_key, $requests + 1, HOUR_IN_SECONDS );
 		}
 	}
-
+	
+	private function get_prompt_for_post( $post_id, $content ) {
+		$use_custom = get_post_meta( $post_id, '_gcg_use_custom_prompt', true );
+		
+		if ( $use_custom ) {
+			$template = get_post_meta( $post_id, '_gcg_custom_prompt', true );
+		} else {
+			$template = get_option( self::OPTION_PROMPT_TEMPLATE );
+		}
+		
+		return str_replace( '{content}', $content, $template );
+	}
+	
+	private function get_cache_key( $prompt ) {
+		return self::TRANSIENT_PREFIX . md5( $prompt );
+	}
+	
+	private function make_api_request( $prompt ) {
+		$api_key = get_option( self::OPTION_API_KEY );
+		
+		if ( empty( $api_key ) ) {
+			return new WP_Error( 'no_api_key', __( 'API key not configured.', 'gpt-content-generator-pro' ) );
+		}
+		
+		// Decrypt API key
+		$api_key = $this->decrypt_data( $api_key );
+		
+		$model = get_option( self::OPTION_MODEL, 'gpt-3.5-turbo' );
+		$max_tokens = get_option( self::OPTION_TOKEN_COUNT, 500 );
+		$temperature = floatval( get_option( self::OPTION_TEMPERATURE, 0.7 ) );
+		$frequency_penalty = floatval( get_option( self::OPTION_FREQUENCY_PENALTY, 0 ) );
+		$presence_penalty = floatval( get_option( self::OPTION_PRESENCE_PENALTY, 0 ) );
+		
+		$args = [
+			'headers' => [
+				'Content-Type' => 'application/json',
+				'Authorization' => 'Bearer ' . $api_key,
+			],
+			'body' => json_encode( [
+				'model' => $model,
+				'messages' => [
+					[
+						'role' => 'system',
+						'content' => 'You are a professional content writer who creates high-quality, SEO-friendly content.'
+					],
+					[
+						'role' => 'user',
+						'content' => $prompt
+					]
+				],
+				'max_tokens' => $max_tokens,
+				'temperature' => $temperature,
+				'frequency_penalty' => $frequency_penalty,
+				'presence_penalty' => $presence_penalty,
+			] ),
+			'timeout' => 120,
+			'sslverify' => true,
+		];
+		
+		$response = wp_remote_post( self::API_URL, $args );
+		
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+		
+		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+		
+		if ( isset( $body['error'] ) ) {
+			return new WP_Error( 'api_error', $body['error']['message'] ?? __( 'Unknown API error', 'gpt-content-generator-pro' ) );
+		}
+		
+		if ( ! isset( $body['choices'][0]['message']['content'] ) ) {
+			return new WP_Error( 'invalid_response', __( 'Invalid API response', 'gpt-content-generator-pro' ) );
+		}
+		
+		return [
+			'content' => trim( $body['choices'][0]['message']['content'] ),
+			'tokens' => $body['usage']['total_tokens'] ?? 0
+		];
+	}
+	
+	private function log_usage( $post_id, $prompt, $response, $tokens, $status, $error = '' ) {
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'gcg_logs';
+		
+		$wpdb->insert(
+			$table_name,
+			[
+				'user_id' => get_current_user_id(),
+				'post_id' => $post_id,
+				'prompt' => $prompt,
+				'response' => $response,
+				'tokens_used' => $tokens,
+				'model' => get_option( self::OPTION_MODEL, 'gpt-3.5-turbo' ),
+				'status' => $status,
+				'error_message' => $error,
+			],
+			['%d', '%d', '%s', '%s', '%d', '%s', '%s', '%s']
+		);
+	}
+	
+	public function filter_request_timeout( $timeout, $url ) {
+		if ( strpos( $url, 'openai.com' ) !== false ) {
+			return 120;
+		}
+		return $timeout;
+	}
+	
+	public function add_action_links( $links ) {
+		$settings_link = '<a href="' . admin_url( 'admin.php?page=gpt-content-generator' ) . '">' . __( 'Settings', 'gpt-content-generator-pro' ) . '</a>';
+		array_unshift( $links, $settings_link );
+		return $links;
+	}
+	
+	public function ajax_test_api() {
+		check_ajax_referer( 'gcg_ajax', 'nonce' );
+		
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( __( 'Insufficient permissions.', 'gpt-content-generator-pro' ) );
+		}
+		
+		$response = $this->make_api_request( 'Test connection. Reply with: "Connection successful!"' );
+		
+		if ( is_wp_error( $response ) ) {
+			wp_send_json_error( $response->get_error_message() );
+		}
+		
+		wp_send_json_success( $response['content'] );
+	}
+	
+	public function ajax_clear_cache() {
+		check_ajax_referer( 'gcg_ajax', 'nonce' );
+		
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( __( 'Insufficient permissions.', 'gpt-content-generator-pro' ) );
+		}
+		
+		$this->clear_all_cache();
+		wp_send_json_success( __( 'Cache cleared successfully.', 'gpt-content-generator-pro' ) );
+	}
+	
+	private function clear_all_cache() {
+		global $wpdb;
+		$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_" . self::TRANSIENT_PREFIX . "%'" );
+		$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_timeout_" . self::TRANSIENT_PREFIX . "%'" );
+	}
+	
+	public function render_admin_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		
+		// Save settings
+		if ( isset( $_POST['submit'] ) ) {
+			check_admin_referer( 'gcg_settings' );
+			// Settings are saved automatically via register_setting
+			echo '<div class="notice notice-success"><p>' . __( 'Settings saved.', 'gpt-content-generator-pro' ) . '</p></div>';
+		}
+		
+		include GCG_PLUGIN_DIR . 'templates/admin-settings.php';
+	}
+	
+	public function render_logs_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		
+		include GCG_PLUGIN_DIR . 'templates/admin-logs.php';
+	}
+	
+	public function render_templates_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		
+		include GCG_PLUGIN_DIR . 'templates/admin-templates.php';
+	}
 }
 
-new GPTContentGenerator();
+// Initialize the plugin
+GPTContentGeneratorPro::get_instance();
